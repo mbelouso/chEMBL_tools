@@ -12,3 +12,4 @@ Dependancies:
 -tqdm
 -molbloom
 -numpy
+-pyyaml
