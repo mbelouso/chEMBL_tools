@@ -13,3 +13,4 @@ Dependancies:
 -molbloom
 -numpy
 -pyyaml
+-biopython
