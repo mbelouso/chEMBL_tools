@@ -1,0 +1,21 @@
+name: chembl_tools
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - matplotlib
+  - pandas
+  - scikit-learn
+  - tqdm
+  - numpy
+  - pyyaml
+  - biopython
+  - rdkit
+  - pip
+  - seaborn
+  - ipykernel
+  - requests
+  - pip:
+    - molbloom
+    - PyQt5

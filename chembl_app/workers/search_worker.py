@@ -1,0 +1,125 @@
+import math
+from dataclasses import dataclass
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+from PyQt5.QtCore import QThread, pyqtSignal
+
+from core.db.connection import get_connection
+from core.db.queries import (
+    query_by_properties,
+    query_target_molregnos,
+    query_activity_aggregates,
+    nm_to_pchembl,
+    pchembl_to_nm,
+)
+from core.chemistry.fingerprints import compute_fingerprints, add_purchasability
+from core.chemistry.tsne import run_tsne, make_tsne_figure
+from core.chemistry.clustering import ClusterParams, cluster, diversity_select
+
+
+@dataclass
+class SearchParams:
+    mw_min: float = 500.0
+    mw_max: float = 900.0
+    logp_min: float = 3.0
+    logp_max: float = 5.0
+    target_text: str = ""
+    ic50_max_nm: Optional[float] = None
+    ec50_max_nm: Optional[float] = None
+    ki_max_nm: Optional[float] = None
+    purchasable_only: bool = False
+
+
+class SearchWorker(QThread):
+    progress = pyqtSignal(int)
+    status = pyqtSignal(str)
+    results_ready = pyqtSignal(object, object, object)  # df, fps_array, tsne_coords
+    plot_ready = pyqtSignal(object)                      # Figure
+    error = pyqtSignal(str)
+
+    def __init__(self, db_path: str, params: SearchParams, parent=None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self.params = params
+
+    def run(self):
+        try:
+            p = self.params
+            with get_connection(self.db_path) as conn:
+                self.status.emit("Querying database (MW/LogP)…")
+                self.progress.emit(5)
+                df = query_by_properties(
+                    conn,
+                    (p.mw_min, p.mw_max),
+                    (p.logp_min, p.logp_max),
+                )
+                if df.empty:
+                    self.error.emit("No compounds found for the given MW/LogP range.")
+                    return
+
+                if p.target_text.strip():
+                    self.status.emit(f"Filtering by target '{p.target_text}'…")
+                    self.progress.emit(15)
+                    tids = query_target_molregnos(conn, p.target_text.strip())
+                    df = df[df["molregno"].isin(tids)].reset_index(drop=True)
+                    if df.empty:
+                        self.error.emit("No compounds found for the specified target.")
+                        return
+
+                self.status.emit("Aggregating activity data (IC50/EC50/Ki)…")
+                self.progress.emit(25)
+                for act_type, col_pchembl, col_nm, max_nm in [
+                    ("IC50", "best_ic50_pchembl", "best_ic50_nm", p.ic50_max_nm),
+                    ("EC50", "best_ec50_pchembl", "best_ec50_nm", p.ec50_max_nm),
+                    ("Ki",   "best_ki_pchembl",   "best_ki_nm",   p.ki_max_nm),
+                ]:
+                    agg = query_activity_aggregates(conn, df["molregno"].tolist(), act_type)
+                    if not agg.empty:
+                        agg = agg.rename(columns={"best_pchembl": col_pchembl, "assay_count": f"{act_type.lower()}_assay_count"})
+                        df = df.merge(agg, on="molregno", how="left")
+                        df[col_nm] = df[col_pchembl].apply(
+                            lambda v: round(pchembl_to_nm(v), 3) if pd.notna(v) else None
+                        )
+                        if max_nm is not None:
+                            pchembl_min = nm_to_pchembl(max_nm)
+                            df = df[df[col_pchembl].notna() & (df[col_pchembl] >= pchembl_min)].reset_index(drop=True)
+                            if df.empty:
+                                self.error.emit(f"No compounds pass the {act_type} filter.")
+                                return
+
+            if p.purchasable_only:
+                self.status.emit("Checking purchasability…")
+                self.progress.emit(40)
+                df = add_purchasability(df)
+                df = df[df["purchasable"]].reset_index(drop=True)
+                if df.empty:
+                    self.error.emit("No purchasable compounds found.")
+                    return
+
+            self.status.emit("Generating Morgan fingerprints…")
+            self.progress.emit(55)
+            fps_array = compute_fingerprints(df)
+
+            self.status.emit("Running tSNE (this may take a minute)…")
+            self.progress.emit(70)
+            tsne_coords = run_tsne(fps_array)
+
+            self.status.emit("Clustering (K-means preview)…")
+            self.progress.emit(88)
+            n_cl = min(20, len(df))
+            params = ClusterParams(algorithm="kmeans", n_clusters=n_cl)
+            labels, centers = cluster(fps_array, params)
+            df["tsne_x"] = tsne_coords[:, 0]
+            df["tsne_y"] = tsne_coords[:, 1]
+            df["cluster"] = labels
+
+            fig = make_tsne_figure(df, color_col="cluster")
+
+            self.progress.emit(100)
+            self.results_ready.emit(df, fps_array, tsne_coords)
+            self.plot_ready.emit(fig)
+
+        except Exception as exc:
+            self.error.emit(str(exc))
