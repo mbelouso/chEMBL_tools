@@ -16,7 +16,8 @@ dependencies:
   - seaborn
   - ipykernel
   - requests
+  - hdbscan
+  - umap-learn
   - pip:
     - molbloom
     - PyQt5
-    - umap-learn

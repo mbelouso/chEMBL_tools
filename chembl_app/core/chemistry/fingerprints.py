@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
-from rdkit.Chem import AllChem
+from rdkit import DataStructs
+from rdkit.Chem import AllChem, rdFingerprintGenerator
 from tqdm import tqdm
 
 try:
@@ -12,13 +13,16 @@ except ImportError:
 
 def compute_fingerprints(df: pd.DataFrame) -> np.ndarray:
     mols = df["canonical_smiles"].apply(AllChem.MolFromSmiles)
+    morgan_gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
     fps = []
     for mol in tqdm(mols, desc="Generating fingerprints", leave=False):
         if mol is not None:
-            fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
-            fps.append(np.array(fp))
+            fp = morgan_gen.GetFingerprint(mol)
+            arr = np.zeros((2048,), dtype=np.int8)
+            DataStructs.ConvertToNumpyArray(fp, arr)
+            fps.append(arr)
         else:
-            fps.append(np.zeros(2048, dtype=int))
+            fps.append(np.zeros(2048, dtype=np.int8))
     return np.array(fps)
 
 

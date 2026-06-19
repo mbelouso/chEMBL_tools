@@ -13,7 +13,13 @@ def run_pca(fps_array: np.ndarray) -> np.ndarray:
 
 
 def run_umap(fps_array: np.ndarray) -> np.ndarray:
-    from umap import UMAP
+    try:
+        from umap import UMAP
+    except ImportError as exc:
+        raise ImportError(
+            "UMAP is not available. Install dependency 'umap-learn' "
+            "(e.g., conda install -c conda-forge umap-learn)."
+        ) from exc
     reducer = UMAP(n_components=2, random_state=42, n_neighbors=15, min_dist=0.1)
     return reducer.fit_transform(fps_array)
 

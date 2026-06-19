@@ -11,12 +11,13 @@ from core.db.queries import (
     query_by_properties,
     query_target_molregnos,
     query_activity_aggregates,
+    query_export_details,
     nm_to_pchembl,
     pchembl_to_nm,
 )
 from core.chemistry.fingerprints import compute_fingerprints, add_purchasability
 from core.chemistry.tsne import run_tsne, make_tsne_figure
-from core.chemistry.projections import run_pca, run_umap, make_projection_figure
+from core.chemistry.projections import run_pca, make_projection_figure
 from core.chemistry.clustering import ClusterParams, cluster, diversity_select
 
 
@@ -39,7 +40,6 @@ class SearchWorker(QThread):
     results_ready = pyqtSignal(object, object, object)  # df, fps_array, tsne_coords
     plot_ready = pyqtSignal(object)                      # t-SNE Figure
     pca_plot_ready = pyqtSignal(object)                  # PCA Figure
-    umap_plot_ready = pyqtSignal(object)                 # UMAP Figure
     error = pyqtSignal(str)
 
     def __init__(self, db_path: str, params: SearchParams, parent=None):
@@ -92,6 +92,20 @@ class SearchWorker(QThread):
                                 self.error.emit(f"No compounds pass the {act_type} filter.")
                                 return
 
+                self.status.emit("Collecting target metadata…")
+                self.progress.emit(35)
+                details = query_export_details(conn, df["molregno"].tolist())
+                if not details.empty:
+                    details = details.sort_values(["molregno", "best_pchembl"], ascending=[True, False])
+                    primary_targets = details.drop_duplicates("molregno")[[
+                        "molregno", "target_name", "target_chembl_id", "uniprot_accession",
+                    ]].rename(columns={
+                        "target_name": "target_name",
+                        "target_chembl_id": "target_chembl_id",
+                        "uniprot_accession": "target_uniprot",
+                    })
+                    df = df.merge(primary_targets, on="molregno", how="left")
+
             if p.purchasable_only:
                 self.status.emit("Checking purchasability…")
                 self.progress.emit(40)
@@ -114,6 +128,7 @@ class SearchWorker(QThread):
 
             self.status.emit("Running PCA…")
             self.progress.emit(67)
+
             pca_coords = run_pca(fps_array)
             df["pca_x"] = pca_coords[:, 0]
             df["pca_y"] = pca_coords[:, 1]
@@ -122,25 +137,15 @@ class SearchWorker(QThread):
                 f"PCA — {len(df)} compounds", color_col="cluster",
             )
             self.pca_plot_ready.emit(pca_fig)
+            self.progress.emit(75)
 
-            self.status.emit("Running t-SNE (this may take a moment)…")
-            self.progress.emit(72)
+            self.status.emit("Running t-SNE…")
             tsne_coords = run_tsne(fps_array)
             df["tsne_x"] = tsne_coords[:, 0]
             df["tsne_y"] = tsne_coords[:, 1]
             tsne_fig = make_tsne_figure(df, color_col="cluster")
             self.plot_ready.emit(tsne_fig)
-
-            self.status.emit("Running UMAP…")
-            self.progress.emit(87)
-            umap_coords = run_umap(fps_array)
-            df["umap_x"] = umap_coords[:, 0]
-            df["umap_y"] = umap_coords[:, 1]
-            umap_fig = make_projection_figure(
-                df, "umap_x", "umap_y", "UMAP 1", "UMAP 2",
-                f"UMAP — {len(df)} compounds", color_col="cluster",
-            )
-            self.umap_plot_ready.emit(umap_fig)
+            self.progress.emit(92)
 
             self.progress.emit(100)
             self.results_ready.emit(df, fps_array, tsne_coords)

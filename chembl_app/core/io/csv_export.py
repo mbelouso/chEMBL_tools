@@ -13,12 +13,17 @@ def export_csv(
     details = query_export_details(conn, molregnos)
 
     base_cols = [
+        "molregno",
         "chembl_id", "canonical_smiles", "molecular_weight", "alogp",
         "hba", "hbd", "psa",
+        "target_name", "target_chembl_id", "target_uniprot",
+        "best_ic50_nm", "best_ec50_nm", "best_ki_nm",
     ]
     export = df[[c for c in base_cols if c in df.columns]].copy()
 
     if not details.empty:
+        if "assay_count" not in details.columns:
+            details["assay_count"] = None
         details["best_nm"] = details["best_pchembl"].apply(
             lambda v: round(pchembl_to_nm(v), 3) if pd.notna(v) else None
         )
@@ -35,12 +40,11 @@ def export_csv(
             })
             # keep best (lowest nm = highest pchembl) per molregno
             sub = sub.groupby("molregno").first().reset_index()
-            export = export.merge(
-                sub.drop_duplicates("molregno"),
-                left_on="molregno" if "molregno" in export.columns else None,
-                right_on="molregno",
-                how="left",
-            ) if "molregno" in export.columns else export
+            if "molregno" in export.columns:
+                export = export.merge(sub.drop_duplicates("molregno"), on="molregno", how="left")
+
+    if "molregno" in export.columns:
+        export = export.drop(columns=["molregno"])
 
     export.to_csv(output_path, index=False)
     return output_path

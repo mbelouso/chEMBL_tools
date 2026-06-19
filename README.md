@@ -5,7 +5,7 @@ Tools for querying the ChEMBL database, filtering compounds by physicochemical a
 ## Features
 
 - **Compound Search** — filter by MW, LogP, target name, IC50/EC50/Ki (nM) and purchasability against a local ChEMBL SQLite database
-- **Diversity Filtering** — K-means or GMM clustering with tunable tightness quantile; interactive tSNE visualisation
+- **Diversity Filtering** — automatic class estimation (Ensemble/Calinski/Silhouette/Davies-Bouldin/HDBSCAN), centroid-near random sampling, and pre/post tSNE visualisation
 - **CSV Export** — enriched output including target names, UniProt accessions, and best activity values
 - **Boltz-2 YAML Export** — generate per-compound YAML inputs (affinity or template mode) distributed across subdirectories
 - **MSA Generation** — query the ColabFold API to generate `.a3m` MSA files, or load a pre-computed one
@@ -45,7 +45,7 @@ Set MW range, LogP range, an optional target keyword (e.g. `EGFR`), and optional
 
 ### Tab 2 — Diversity Filter
 
-Choose K-means or GMM, set the number of clusters and tightness quantile, then click **Run Clustering**. The tightest clusters are collapsed to one representative each; all other compounds are kept. Click **Export Filtered Results as CSV** to save a file that includes target names, UniProt accessions, and best activity values.
+Choose K-means or GMM, enable automatic class estimation (or set manual classes), select the auto-class method, then choose either centroid-near random sampling or tightness representatives. Click **Run Diversity** to generate a filtered set and inspect pre/post tSNE views. The Diversity tab also includes the same histogram curation panel as Search; curated diversity results are used for export and YAML when active.
 
 ### Tab 3 — Boltz-2 YAML Export
 
@@ -80,6 +80,24 @@ chembl_app/
 | rdkit | conda-forge |
 | pandas, numpy, matplotlib, seaborn | conda-forge |
 | scikit-learn | conda-forge |
+| hdbscan | conda-forge |
+| umap-learn | conda-forge |
 | pyyaml, biopython, tqdm | conda-forge |
 | requests | conda-forge |
 | PyQt5, molbloom | pip |
+
+## Troubleshooting
+
+If `run_umap` fails with an import error (for example `cannot import name UMAP`), install UMAP in the active environment:
+
+```bash
+conda install -c conda-forge umap-learn
+```
+
+If the environment already existed before this dependency was added, run:
+
+```bash
+conda env update -f environment.yml --prune
+```
+
+If HDBSCAN-based auto-class estimation is selected in the Diversity tab and dependencies are missing, update the environment with the same command above.

@@ -73,7 +73,10 @@ class MainWindow(QMainWindow):
 
         # Wire signals
         self._search_tab.search_requested.connect(self._on_search_requested)
+        self._search_tab.export_requested.connect(self._on_search_export_requested)
+        self._search_tab.curation_changed.connect(self._on_search_curation_changed)
         self._diversity_tab.cluster_requested.connect(self._on_cluster_requested)
+        self._diversity_tab.curation_changed.connect(self._on_diversity_curation_changed)
         self._diversity_tab.export_requested.connect(self._on_export_requested)
         self._boltz_tab.yaml_requested.connect(self._on_yaml_requested)
         self._boltz_tab.msa_query_requested.connect(self._on_msa_requested)
@@ -105,7 +108,6 @@ class MainWindow(QMainWindow):
         self._search_worker.results_ready.connect(self._on_search_complete)
         self._search_worker.plot_ready.connect(self._search_tab.tsne_canvas.set_figure)
         self._search_worker.pca_plot_ready.connect(self._search_tab.pca_canvas.set_figure)
-        self._search_worker.umap_plot_ready.connect(self._search_tab.umap_canvas.set_figure)
         self._search_worker.error.connect(self._on_error)
         self._search_worker.finished.connect(lambda: self._search_tab.set_busy(False))
         self._search_worker.finished.connect(lambda: self._show_progress(False))
@@ -113,22 +115,47 @@ class MainWindow(QMainWindow):
 
     def _on_search_complete(self, df, fps_array, tsne_coords):
         self.state.current_results = df
+        self.state.curated_results = df
         self.state.fps_array = fps_array
+        self.state.curated_fps_array = fps_array
         self.state.tsne_coords = tsne_coords
+        self.state.curated_tsne_coords = tsne_coords
         self.state.diversity_results = None
+        self.state.diversity_curated_results = None
 
-        self._search_tab.results_table.update_data(df)
-        self._search_tab.tsne_canvas.set_dataframe(df)
-        self._search_tab.pca_canvas.set_dataframe(df)
-        self._search_tab.umap_canvas.set_dataframe(df)
-        self._search_tab.activity_histogram.update_data(df)
-        self._search_tab.set_result_count(len(df))
+        self._search_tab.set_search_results(df)
 
         self._diversity_tab.setEnabled(True)
         self._boltz_tab.setEnabled(True)
         self._boltz_tab.suggest_ndirs(len(df))
 
         self._status_bar.showMessage(f"Found {len(df)} compounds.")
+
+    def _on_search_curation_changed(self, curated_df):
+        if self.state.current_results is None:
+            return
+
+        self.state.curated_results = curated_df
+        if curated_df is None:
+            self.state.curated_fps_array = None
+            self.state.curated_tsne_coords = None
+            return
+
+        if self.state.fps_array is None or self.state.tsne_coords is None:
+            return
+
+        row_idx = curated_df.index.to_numpy(dtype=int)
+        self.state.curated_fps_array = self.state.fps_array[row_idx]
+        self.state.curated_tsne_coords = self.state.tsne_coords[row_idx]
+        self._boltz_tab.suggest_ndirs(len(curated_df))
+        self._status_bar.showMessage(
+            f"Curated subset: {len(curated_df)}/{len(self.state.current_results)} compounds."
+        )
+
+    def _get_active_search_inputs(self):
+        if self.state.curated_results is not None and self.state.curated_fps_array is not None:
+            return self.state.curated_results, self.state.curated_fps_array, self.state.curated_tsne_coords
+        return self.state.current_results, self.state.fps_array, self.state.tsne_coords
 
     # ── Diversity ─────────────────────────────────────────────────────
 
@@ -142,16 +169,20 @@ class MainWindow(QMainWindow):
         self._diversity_tab.set_busy(True)
         self._show_progress(True)
 
+        active_df, active_fps, active_tsne = self._get_active_search_inputs()
+
         self._diversity_worker = DiversityWorker(
-            self.state.current_results,
-            self.state.fps_array,
-            self.state.tsne_coords,
+            active_df,
+            active_fps,
+            active_tsne,
             params,
         )
         self._diversity_worker.progress.connect(self._progress.setValue)
         self._diversity_worker.status.connect(self._status_bar.showMessage)
         self._diversity_worker.results_ready.connect(self._on_diversity_complete)
-        self._diversity_worker.plot_ready.connect(self._diversity_tab.tsne_canvas.set_figure)
+        self._diversity_worker.pre_plot_ready.connect(self._diversity_tab.set_pre_filter_plot)
+        self._diversity_worker.plot_ready.connect(self._diversity_tab.post_tsne_canvas.set_figure)
+        self._diversity_worker.summary_ready.connect(self._diversity_tab.set_summary)
         self._diversity_worker.error.connect(self._on_error)
         self._diversity_worker.finished.connect(lambda: self._diversity_tab.set_busy(False))
         self._diversity_worker.finished.connect(lambda: self._show_progress(False))
@@ -159,14 +190,26 @@ class MainWindow(QMainWindow):
 
     def _on_diversity_complete(self, df):
         self.state.diversity_results = df
+        self.state.diversity_curated_results = df
         self._diversity_tab.on_results_ready(df)
-        self._diversity_tab.tsne_canvas.set_dataframe(df)
+        self._diversity_tab.post_tsne_canvas.set_dataframe(df)
         self._status_bar.showMessage(f"Diversity filter: {len(df)} compounds retained.")
+
+    def _on_diversity_curation_changed(self, curated_df):
+        self.state.diversity_curated_results = curated_df
+        base_n = len(self.state.diversity_results) if self.state.diversity_results is not None else 0
+        cur_n = len(curated_df) if curated_df is not None else 0
+        if base_n > 0:
+            self._status_bar.showMessage(f"Diversity curated: {cur_n}/{base_n} compounds.")
 
     # ── Export ────────────────────────────────────────────────────────
 
     def _on_export_requested(self, output_path: str):
-        df = self.state.diversity_results if self.state.diversity_results is not None else self.state.current_results
+        df = (
+            self.state.diversity_curated_results
+            if self.state.diversity_curated_results is not None
+            else (self.state.diversity_results if self.state.diversity_results is not None else self.state.current_results)
+        )
         if df is None:
             return
         try:
@@ -177,14 +220,27 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._on_error(str(e))
 
+    def _on_search_export_requested(self, output_path: str):
+        df = self.state.curated_results if self.state.curated_results is not None else self.state.current_results
+        if df is None:
+            return
+        try:
+            with get_connection(self.state.db_path) as conn:
+                export_csv(df, conn, output_path)
+            self._status_bar.showMessage(f"Exported search results to {output_path}")
+            QMessageBox.information(self, "Export complete", f"Results saved to:\n{output_path}")
+        except Exception as e:
+            self._on_error(str(e))
+
     # ── YAML ──────────────────────────────────────────────────────────
 
     def _on_yaml_requested(self, params):
         choice = self._boltz_tab.get_source_choice()
+        active_search_df, _, _ = self._get_active_search_inputs()
         df = (
-            self.state.diversity_results
-            if "Diversity" in choice and self.state.diversity_results is not None
-            else self.state.current_results
+            (self.state.diversity_curated_results if self.state.diversity_curated_results is not None else self.state.diversity_results)
+            if "Diversity" in choice and (self.state.diversity_results is not None or self.state.diversity_curated_results is not None)
+            else active_search_df
         )
         if df is None:
             QMessageBox.warning(self, "No data", "Run a search first.")

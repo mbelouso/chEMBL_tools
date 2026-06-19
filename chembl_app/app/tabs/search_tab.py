@@ -1,7 +1,8 @@
+import pandas as pd
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QLabel,
     QDoubleSpinBox, QLineEdit, QCheckBox, QPushButton,
-    QSplitter, QSizePolicy, QCompleter, QTabWidget,
+    QSplitter, QSizePolicy, QCompleter, QTabWidget, QFileDialog,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
@@ -10,6 +11,8 @@ from app.widgets.results_table import ResultsTable
 from app.widgets.tsne_canvas import TSNECanvas
 from app.widgets.molecule_viewer import MoleculeViewer
 from app.widgets.activity_histogram import ActivityHistogramCanvas
+from core.chemistry.tsne import make_tsne_figure
+from core.chemistry.projections import make_projection_figure
 from workers.search_worker import SearchParams
 from workers.target_names_worker import TargetNamesWorker
 
@@ -39,11 +42,14 @@ class _ActivityRow(QWidget):
 
 class SearchTab(QWidget):
     search_requested = pyqtSignal(object)   # SearchParams
+    export_requested = pyqtSignal(str)      # output file path
+    curation_changed = pyqtSignal(object)   # curated DataFrame
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._names_worker: TargetNamesWorker = None
         self._names_loaded = False
+        self._base_df = pd.DataFrame()
         self._build_ui()
 
     def _build_ui(self):
@@ -102,6 +108,12 @@ class SearchTab(QWidget):
         self._search_btn.clicked.connect(self._on_search)
         left_layout.addWidget(self._search_btn)
 
+        self._export_btn = QPushButton("Export Search Results as CSV…")
+        self._export_btn.setFixedHeight(36)
+        self._export_btn.setEnabled(False)
+        self._export_btn.clicked.connect(self._on_export)
+        left_layout.addWidget(self._export_btn)
+
         left_layout.addStretch()
         root.addWidget(left)
 
@@ -127,17 +139,16 @@ class SearchTab(QWidget):
         top_splitter.addWidget(self.molecule_viewer)
         top_splitter.setSizes([600, 280])
 
-        # Projection tabs: t-SNE / UMAP / PCA
+        # Projection tabs: t-SNE / PCA
         self._projection_tabs = QTabWidget()
         self._projection_tabs.setTabPosition(QTabWidget.South)
         self.tsne_canvas = TSNECanvas()
         self.pca_canvas  = TSNECanvas()
-        self.umap_canvas = TSNECanvas()
         self.activity_histogram = ActivityHistogramCanvas()
         self._projection_tabs.addTab(self.tsne_canvas,       "t-SNE")
-        self._projection_tabs.addTab(self.umap_canvas,       "UMAP")
         self._projection_tabs.addTab(self.pca_canvas,        "PCA")
-        self._projection_tabs.addTab(self.activity_histogram, "Activity")
+        self._projection_tabs.addTab(self.activity_histogram, "Distributions")
+        self.activity_histogram.curated_changed.connect(self._on_curated_changed)
 
         outer_splitter.addWidget(top_splitter)
         outer_splitter.addWidget(self._projection_tabs)
@@ -189,6 +200,41 @@ class SearchTab(QWidget):
         )
         self.search_requested.emit(params)
 
+    def _on_export(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Search Results", "search_results.csv", "CSV (*.csv)"
+        )
+        if path:
+            self.export_requested.emit(path)
+
+    def _on_curated_changed(self, curated_df: pd.DataFrame):
+        self.results_table.update_data(curated_df)
+        self.tsne_canvas.set_dataframe(curated_df)
+        self.pca_canvas.set_dataframe(curated_df)
+        self.set_result_count(len(curated_df))
+
+        if not curated_df.empty and "cluster" in curated_df.columns:
+            tsne_fig = make_tsne_figure(curated_df, color_col="cluster")
+            self.tsne_canvas.set_figure(tsne_fig)
+
+            if "pca_x" in curated_df.columns and "pca_y" in curated_df.columns:
+                pca_fig = make_projection_figure(
+                    curated_df, "pca_x", "pca_y", "PC 1", "PC 2",
+                    f"PCA — {len(curated_df)} compounds", color_col="cluster",
+                )
+                self.pca_canvas.set_figure(pca_fig)
+
+        self.curation_changed.emit(curated_df)
+
+    def set_search_results(self, df: pd.DataFrame):
+        self._base_df = df.copy()
+        self.results_table.update_data(df)
+        self.tsne_canvas.set_dataframe(df)
+        self.pca_canvas.set_dataframe(df)
+        self.activity_histogram.update_data(df)
+        self.set_result_count(len(df))
+        self._export_btn.setEnabled(True)
+
     def set_result_count(self, count: int):
         if count == 0:
             self._count_label.setText("No compounds found.")
@@ -201,6 +247,7 @@ class SearchTab(QWidget):
     def set_busy(self, busy: bool):
         self._search_btn.setEnabled(not busy)
         self._search_btn.setText("Searching…" if busy else "Search")
+        self._export_btn.setEnabled((not busy) and (not self._base_df.empty))
         if busy:
             self._count_label.setText("Searching…")
             self._count_label.setStyleSheet("color: gray; font-style: italic;")

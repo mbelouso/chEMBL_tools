@@ -48,6 +48,7 @@ _EXPORT_SQL = """
 SELECT a.molregno,
        a.standard_type,
        MIN(a.pchembl_value)  AS best_pchembl,
+    COUNT(*)              AS assay_count,
        td.pref_name          AS target_name,
        td.chembl_id          AS target_chembl_id,
        cs2.accession         AS uniprot_accession
