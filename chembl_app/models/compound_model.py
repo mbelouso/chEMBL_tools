@@ -33,23 +33,30 @@ class CompoundTableModel(QAbstractTableModel):
         return len(self._df)
 
     def columnCount(self, parent=QModelIndex()):
-        return len(self._cols)
+        return len(self._cols) + 1  # +1 for the row-number column
 
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
             return None
         if role == Qt.DisplayRole:
-            val = self._df.iloc[index.row()][self._cols[index.column()]]
+            if index.column() == 0:
+                return str(index.row() + 1)
+            col = self._cols[index.column() - 1]
+            val = self._df.iloc[index.row()][col]
             if isinstance(val, float):
                 return f"{val:.3f}"
             return str(val) if val is not None and not (isinstance(val, float) and pd.isna(val)) else ""
         if role == Qt.TextAlignmentRole:
+            if index.column() == 0:
+                return Qt.AlignRight | Qt.AlignVCenter
             return Qt.AlignLeft | Qt.AlignVCenter
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
-            return self._headers[section]
+            if section == 0:
+                return "#"
+            return self._headers[section - 1]
         return None
 
     def get_dataframe(self) -> pd.DataFrame:

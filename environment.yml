@@ -19,3 +19,4 @@ dependencies:
   - pip:
     - molbloom
     - PyQt5
+    - umap-learn

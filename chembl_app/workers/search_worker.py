@@ -16,6 +16,7 @@ from core.db.queries import (
 )
 from core.chemistry.fingerprints import compute_fingerprints, add_purchasability
 from core.chemistry.tsne import run_tsne, make_tsne_figure
+from core.chemistry.projections import run_pca, run_umap, make_projection_figure
 from core.chemistry.clustering import ClusterParams, cluster, diversity_select
 
 
@@ -36,7 +37,9 @@ class SearchWorker(QThread):
     progress = pyqtSignal(int)
     status = pyqtSignal(str)
     results_ready = pyqtSignal(object, object, object)  # df, fps_array, tsne_coords
-    plot_ready = pyqtSignal(object)                      # Figure
+    plot_ready = pyqtSignal(object)                      # t-SNE Figure
+    pca_plot_ready = pyqtSignal(object)                  # PCA Figure
+    umap_plot_ready = pyqtSignal(object)                 # UMAP Figure
     error = pyqtSignal(str)
 
     def __init__(self, db_path: str, params: SearchParams, parent=None):
@@ -102,24 +105,45 @@ class SearchWorker(QThread):
             self.progress.emit(55)
             fps_array = compute_fingerprints(df)
 
-            self.status.emit("Running tSNE (this may take a minute)…")
-            self.progress.emit(70)
-            tsne_coords = run_tsne(fps_array)
-
-            self.status.emit("Clustering (K-means preview)…")
-            self.progress.emit(88)
+            self.status.emit("Clustering (K-means)…")
+            self.progress.emit(62)
             n_cl = min(20, len(df))
-            params = ClusterParams(algorithm="kmeans", n_clusters=n_cl)
-            labels, centers = cluster(fps_array, params)
-            df["tsne_x"] = tsne_coords[:, 0]
-            df["tsne_y"] = tsne_coords[:, 1]
+            cluster_params = ClusterParams(algorithm="kmeans", n_clusters=n_cl)
+            labels, centers = cluster(fps_array, cluster_params)
             df["cluster"] = labels
 
-            fig = make_tsne_figure(df, color_col="cluster")
+            self.status.emit("Running PCA…")
+            self.progress.emit(67)
+            pca_coords = run_pca(fps_array)
+            df["pca_x"] = pca_coords[:, 0]
+            df["pca_y"] = pca_coords[:, 1]
+            pca_fig = make_projection_figure(
+                df, "pca_x", "pca_y", "PC 1", "PC 2",
+                f"PCA — {len(df)} compounds", color_col="cluster",
+            )
+            self.pca_plot_ready.emit(pca_fig)
+
+            self.status.emit("Running t-SNE (this may take a moment)…")
+            self.progress.emit(72)
+            tsne_coords = run_tsne(fps_array)
+            df["tsne_x"] = tsne_coords[:, 0]
+            df["tsne_y"] = tsne_coords[:, 1]
+            tsne_fig = make_tsne_figure(df, color_col="cluster")
+            self.plot_ready.emit(tsne_fig)
+
+            self.status.emit("Running UMAP…")
+            self.progress.emit(87)
+            umap_coords = run_umap(fps_array)
+            df["umap_x"] = umap_coords[:, 0]
+            df["umap_y"] = umap_coords[:, 1]
+            umap_fig = make_projection_figure(
+                df, "umap_x", "umap_y", "UMAP 1", "UMAP 2",
+                f"UMAP — {len(df)} compounds", color_col="cluster",
+            )
+            self.umap_plot_ready.emit(umap_fig)
 
             self.progress.emit(100)
             self.results_ready.emit(df, fps_array, tsne_coords)
-            self.plot_ready.emit(fig)
 
         except Exception as exc:
             self.error.emit(str(exc))

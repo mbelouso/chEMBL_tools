@@ -107,6 +107,14 @@ def nm_to_pchembl(nm: float) -> float:
     return 9 - math.log10(nm)
 
 
+def query_all_target_names(conn: sqlite3.Connection) -> list:
+    cur = conn.execute(
+        "SELECT DISTINCT pref_name FROM target_dictionary "
+        "WHERE pref_name IS NOT NULL ORDER BY pref_name"
+    )
+    return [row[0] for row in cur.fetchall()]
+
+
 def query_export_details(conn: sqlite3.Connection, molregnos) -> pd.DataFrame:
     chunks = []
     for chunk in _chunked_in(molregnos):

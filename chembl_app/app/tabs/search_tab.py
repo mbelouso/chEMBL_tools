@@ -1,13 +1,17 @@
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QLabel,
     QDoubleSpinBox, QLineEdit, QCheckBox, QPushButton,
-    QSplitter, QSizePolicy,
+    QSplitter, QSizePolicy, QCompleter, QTabWidget,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QStandardItemModel, QStandardItem
 
 from app.widgets.results_table import ResultsTable
 from app.widgets.tsne_canvas import TSNECanvas
+from app.widgets.molecule_viewer import MoleculeViewer
+from app.widgets.activity_histogram import ActivityHistogramCanvas
 from workers.search_worker import SearchParams
+from workers.target_names_worker import TargetNamesWorker
 
 
 class _ActivityRow(QWidget):
@@ -38,6 +42,8 @@ class SearchTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._names_worker: TargetNamesWorker = None
+        self._names_loaded = False
         self._build_ui()
 
     def _build_ui(self):
@@ -100,13 +106,74 @@ class SearchTab(QWidget):
         root.addWidget(left)
 
         # ── Right panel ───────────────────────────────────────────────
-        splitter = QSplitter(Qt.Vertical)
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+
+        # Count label
+        self._count_label = QLabel("No results yet")
+        self._count_label.setStyleSheet("color: gray; font-style: italic;")
+        right_layout.addWidget(self._count_label)
+
+        # Vertical splitter: table+viewer on top, t-SNE on bottom
+        outer_splitter = QSplitter(Qt.Vertical)
+
+        # Top: table on left, molecule viewer on right
+        top_splitter = QSplitter(Qt.Horizontal)
         self.results_table = ResultsTable()
+        self.molecule_viewer = MoleculeViewer()
+        top_splitter.addWidget(self.results_table)
+        top_splitter.addWidget(self.molecule_viewer)
+        top_splitter.setSizes([600, 280])
+
+        # Projection tabs: t-SNE / UMAP / PCA
+        self._projection_tabs = QTabWidget()
+        self._projection_tabs.setTabPosition(QTabWidget.South)
         self.tsne_canvas = TSNECanvas()
-        splitter.addWidget(self.results_table)
-        splitter.addWidget(self.tsne_canvas)
-        splitter.setSizes([300, 400])
-        root.addWidget(splitter, stretch=1)
+        self.pca_canvas  = TSNECanvas()
+        self.umap_canvas = TSNECanvas()
+        self.activity_histogram = ActivityHistogramCanvas()
+        self._projection_tabs.addTab(self.tsne_canvas,       "t-SNE")
+        self._projection_tabs.addTab(self.umap_canvas,       "UMAP")
+        self._projection_tabs.addTab(self.pca_canvas,        "PCA")
+        self._projection_tabs.addTab(self.activity_histogram, "Activity")
+
+        outer_splitter.addWidget(top_splitter)
+        outer_splitter.addWidget(self._projection_tabs)
+        outer_splitter.setSizes([320, 380])
+
+        right_layout.addWidget(outer_splitter)
+        root.addWidget(right, stretch=1)
+
+        # Wire molecule preview
+        self.results_table.row_selected.connect(
+            lambda smiles, cid: self.molecule_viewer.show_smiles(smiles, cid)
+        )
+
+    def set_db_path(self, db_path: str):
+        if self._names_loaded:
+            return  # already done
+        if self._names_worker and self._names_worker.isRunning():
+            return  # already loading
+        self._target_edit.setPlaceholderText("Loading targets…")
+        self._names_worker = TargetNamesWorker(db_path)
+        self._names_worker.names_ready.connect(self._on_target_names_ready)
+        self._names_worker.error.connect(
+            lambda _: self._target_edit.setPlaceholderText("e.g. EGFR — leave blank for all")
+        )
+        self._names_worker.start()
+
+    def _on_target_names_ready(self, names: list):
+        self._names_loaded = True
+        self._target_edit.setPlaceholderText("e.g. EGFR — leave blank for all")
+
+        completer = QCompleter(names, self)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        completer.setMaxVisibleItems(12)
+        completer.setCompletionMode(QCompleter.PopupCompletion)
+        self._target_edit.setCompleter(completer)
 
     def _on_search(self):
         params = SearchParams(
@@ -122,6 +189,19 @@ class SearchTab(QWidget):
         )
         self.search_requested.emit(params)
 
+    def set_result_count(self, count: int):
+        if count == 0:
+            self._count_label.setText("No compounds found.")
+            self._count_label.setStyleSheet("color: gray; font-style: italic;")
+        else:
+            self._count_label.setText(f"{count} compound{'s' if count != 1 else ''} found")
+            self._count_label.setStyleSheet("color: #2a7a2a; font-weight: bold;")
+        self.molecule_viewer.clear()
+
     def set_busy(self, busy: bool):
         self._search_btn.setEnabled(not busy)
         self._search_btn.setText("Searching…" if busy else "Search")
+        if busy:
+            self._count_label.setText("Searching…")
+            self._count_label.setStyleSheet("color: gray; font-style: italic;")
+            self.activity_histogram.clear()

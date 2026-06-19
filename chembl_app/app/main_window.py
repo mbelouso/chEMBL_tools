@@ -78,6 +78,10 @@ class MainWindow(QMainWindow):
         self._boltz_tab.yaml_requested.connect(self._on_yaml_requested)
         self._boltz_tab.msa_query_requested.connect(self._on_msa_requested)
 
+        # Kick off target-name loading if db is already configured
+        if self.state.db_path and os.path.isfile(self.state.db_path):
+            self._search_tab.set_db_path(self.state.db_path)
+
     # ── Search ────────────────────────────────────────────────────────
 
     def _on_search_requested(self, params):
@@ -85,6 +89,7 @@ class MainWindow(QMainWindow):
             self._open_settings(mandatory=True)
             if not self.state.db_path:
                 return
+            self._search_tab.set_db_path(self.state.db_path)
 
         if self._search_worker and self._search_worker.isRunning():
             self._search_worker.requestInterruption()
@@ -99,6 +104,8 @@ class MainWindow(QMainWindow):
         self._search_worker.status.connect(self._status_bar.showMessage)
         self._search_worker.results_ready.connect(self._on_search_complete)
         self._search_worker.plot_ready.connect(self._search_tab.tsne_canvas.set_figure)
+        self._search_worker.pca_plot_ready.connect(self._search_tab.pca_canvas.set_figure)
+        self._search_worker.umap_plot_ready.connect(self._search_tab.umap_canvas.set_figure)
         self._search_worker.error.connect(self._on_error)
         self._search_worker.finished.connect(lambda: self._search_tab.set_busy(False))
         self._search_worker.finished.connect(lambda: self._show_progress(False))
@@ -112,6 +119,10 @@ class MainWindow(QMainWindow):
 
         self._search_tab.results_table.update_data(df)
         self._search_tab.tsne_canvas.set_dataframe(df)
+        self._search_tab.pca_canvas.set_dataframe(df)
+        self._search_tab.umap_canvas.set_dataframe(df)
+        self._search_tab.activity_histogram.update_data(df)
+        self._search_tab.set_result_count(len(df))
 
         self._diversity_tab.setEnabled(True)
         self._boltz_tab.setEnabled(True)
@@ -244,6 +255,7 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self, mandatory=mandatory)
         if dlg.exec_():
             self.state.db_path = dlg.db_path()
+            self._search_tab.set_db_path(self.state.db_path)
 
     def _show_about(self):
         QMessageBox.about(
