@@ -4,9 +4,13 @@ from PyQt5.QtWidgets import (
     QLineEdit, QPushButton, QPlainTextEdit, QRadioButton,
     QComboBox, QSpinBox, QFileDialog, QMessageBox, QProgressBar,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QSettings
 
 from core.io.yaml_generator import YAMLParams
+
+_SETTINGS_ORG = "chEMBL_tools"
+_SETTINGS_APP = "BoltzTab"
+_KEY_OUTDIR   = "yaml/last_output_dir"
 
 
 class BoltzTab(QWidget):
@@ -15,7 +19,11 @@ class BoltzTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._settings = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
         self._build_ui()
+        saved_dir = self._settings.value(_KEY_OUTDIR, "")
+        if saved_dir:
+            self._outdir_edit.setText(saved_dir)
         self.setEnabled(False)
 
     def _build_ui(self):
@@ -168,9 +176,11 @@ class BoltzTab(QWidget):
             self._cif_edit.setText(path)
 
     def _browse_outdir(self):
-        path = QFileDialog.getExistingDirectory(self, "Select output directory")
+        start = self._outdir_edit.text().strip() or self._settings.value(_KEY_OUTDIR, "")
+        path = QFileDialog.getExistingDirectory(self, "Select output directory", start)
         if path:
             self._outdir_edit.setText(path)
+            self._settings.setValue(_KEY_OUTDIR, path)
 
     def _query_colabfold(self):
         seq = self._seq_edit.toPlainText().strip()
@@ -185,7 +195,9 @@ class BoltzTab(QWidget):
         self.msa_query_requested.emit(seq, out_path)
 
     def _on_generate(self):
-        self.yaml_requested.emit(self._collect_yaml_params())
+        params = self._collect_yaml_params()
+        self._settings.setValue(_KEY_OUTDIR, params.output_dir)
+        self.yaml_requested.emit(params)
 
     def _collect_yaml_params(self) -> YAMLParams:
         return YAMLParams(

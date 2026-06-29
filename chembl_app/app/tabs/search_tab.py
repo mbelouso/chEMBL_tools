@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox, QLineEdit, QCheckBox, QPushButton,
     QSplitter, QSizePolicy, QCompleter, QTabWidget, QFileDialog,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
 
 from app.widgets.results_table import ResultsTable
@@ -50,6 +50,8 @@ class SearchTab(QWidget):
         self._names_worker: TargetNamesWorker = None
         self._names_loaded = False
         self._base_df = pd.DataFrame()
+        self._target_completer: QCompleter = None
+        self._target_prefix: str = ""
         self._build_ui()
 
     def _build_ui(self):
@@ -83,7 +85,7 @@ class SearchTab(QWidget):
         tgt_box = QGroupBox("Target")
         tgt_layout = QVBoxLayout(tgt_box)
         self._target_edit = QLineEdit()
-        self._target_edit.setPlaceholderText("e.g. EGFR — leave blank for all")
+        self._target_edit.setPlaceholderText("e.g. EGFR, BRAF — comma-separated, leave blank for all")
         tgt_layout.addWidget(self._target_edit)
         left_layout.addWidget(tgt_box)
 
@@ -171,20 +173,42 @@ class SearchTab(QWidget):
         self._names_worker = TargetNamesWorker(db_path)
         self._names_worker.names_ready.connect(self._on_target_names_ready)
         self._names_worker.error.connect(
-            lambda _: self._target_edit.setPlaceholderText("e.g. EGFR — leave blank for all")
+            lambda _: self._target_edit.setPlaceholderText("e.g. EGFR, BRAF — comma-separated, leave blank for all")
         )
         self._names_worker.start()
 
     def _on_target_names_ready(self, names: list):
         self._names_loaded = True
-        self._target_edit.setPlaceholderText("e.g. EGFR — leave blank for all")
+        self._target_edit.setPlaceholderText("e.g. EGFR, BRAF — comma-separated, leave blank for all")
 
-        completer = QCompleter(names, self)
-        completer.setCaseSensitivity(Qt.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchContains)
-        completer.setMaxVisibleItems(12)
-        completer.setCompletionMode(QCompleter.PopupCompletion)
-        self._target_edit.setCompleter(completer)
+        self._target_completer = QCompleter(names, self)
+        self._target_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._target_completer.setFilterMode(Qt.MatchContains)
+        self._target_completer.setMaxVisibleItems(12)
+        self._target_completer.setCompletionMode(QCompleter.PopupCompletion)
+        # Use setWidget instead of setCompleter so we control multi-token insertion
+        self._target_completer.setWidget(self._target_edit)
+
+        self._target_edit.textEdited.connect(self._on_target_text_edited)
+        self._target_completer.activated.connect(self._on_target_completion)
+
+    def _on_target_text_edited(self, text: str):
+        parts = text.split(",")
+        self._target_prefix = ",".join(parts[:-1])
+        last = parts[-1].lstrip()
+        self._target_completer.setCompletionPrefix(last)
+        if last:
+            self._target_completer.complete()
+        else:
+            self._target_completer.popup().hide()
+
+    def _on_target_completion(self, completion: str):
+        if self._target_prefix:
+            new_text = self._target_prefix + ", " + completion
+        else:
+            new_text = completion
+        self._target_edit.setText(new_text)
+        self._target_edit.setCursorPosition(len(new_text))
 
     def _on_search(self):
         params = SearchParams(

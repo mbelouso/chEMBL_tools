@@ -44,6 +44,21 @@ WHERE standard_type = ?
 GROUP BY molregno
 """
 
+_ACTIVITY_ALL_SQL = """
+SELECT molregno,
+       MIN(CASE WHEN standard_type = 'IC50' THEN pchembl_value END) AS best_ic50_pchembl,
+       COUNT(CASE WHEN standard_type = 'IC50' THEN 1 END)           AS ic50_assay_count,
+       MIN(CASE WHEN standard_type = 'EC50' THEN pchembl_value END) AS best_ec50_pchembl,
+       COUNT(CASE WHEN standard_type = 'EC50' THEN 1 END)           AS ec50_assay_count,
+       MIN(CASE WHEN standard_type = 'Ki'   THEN pchembl_value END) AS best_ki_pchembl,
+       COUNT(CASE WHEN standard_type = 'Ki'  THEN 1 END)            AS ki_assay_count
+FROM activities
+WHERE standard_type IN ('IC50', 'EC50', 'Ki')
+  AND pchembl_value IS NOT NULL
+  AND molregno IN ({placeholders})
+GROUP BY molregno
+"""
+
 _EXPORT_SQL = """
 SELECT a.molregno,
        a.standard_type,
@@ -79,6 +94,11 @@ def query_target_molregnos(conn: sqlite3.Connection, target_text: str) -> Set[in
     return {row[0] for row in cur.fetchall()}
 
 
+def query_target_molregnos_multi(conn: sqlite3.Connection, target_texts: list) -> dict:
+    """Return {target_text: set_of_molregnos} for each entry in target_texts."""
+    return {text: query_target_molregnos(conn, text) for text in target_texts}
+
+
 def _chunked_in(molregnos, size=999):
     lst = list(molregnos)
     for i in range(0, len(lst), size):
@@ -98,6 +118,23 @@ def query_activity_aggregates(
     if chunks:
         return pd.concat(chunks, ignore_index=True)
     return pd.DataFrame(columns=["molregno", "best_pchembl", "assay_count"])
+
+
+def query_all_activity_aggregates(conn: sqlite3.Connection, molregnos) -> pd.DataFrame:
+    """Fetch IC50, EC50 and Ki aggregates in a single table scan."""
+    chunks = []
+    for chunk in _chunked_in(molregnos):
+        ph = ",".join("?" * len(chunk))
+        sql = _ACTIVITY_ALL_SQL.format(placeholders=ph)
+        chunks.append(pd.read_sql_query(sql, conn, params=chunk))
+    if chunks:
+        return pd.concat(chunks, ignore_index=True)
+    return pd.DataFrame(columns=[
+        "molregno",
+        "best_ic50_pchembl", "ic50_assay_count",
+        "best_ec50_pchembl", "ec50_assay_count",
+        "best_ki_pchembl",   "ki_assay_count",
+    ])
 
 
 def pchembl_to_nm(pchembl: float) -> float:

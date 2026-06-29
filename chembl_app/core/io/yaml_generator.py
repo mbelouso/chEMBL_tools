@@ -20,7 +20,6 @@ class YAMLParams:
 
 def _fix_yaml_quotes(contents: str) -> str:
     contents = re.sub(r"(smiles: )(.*)", r"\1'\2'", contents)
-    contents = re.sub(r"(sequence: )([A-Z]+)", r"\1'\2'", contents)
     contents = re.sub(r"'(\[A\])'", r"\1", contents)
     contents = re.sub(r"'(\[B\])'", r"\1", contents)
     contents = re.sub(r"'(\[R\])'", r"\1", contents)

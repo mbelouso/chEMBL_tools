@@ -12,6 +12,7 @@ from app.widgets.activity_histogram import ActivityHistogramCanvas
 from app.widgets.molecule_viewer import MoleculeViewer
 from core.chemistry.clustering import ClusterParams
 from core.chemistry.tsne import make_tsne_figure
+from core.chemistry.projections import make_selection_overlay_figure
 
 
 class DiversityTab(QWidget):
@@ -22,6 +23,8 @@ class DiversityTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._base_df = pd.DataFrame()
+        self._df_pre: pd.DataFrame = pd.DataFrame()
+        self._df_diverse: pd.DataFrame = pd.DataFrame()
         self._build_ui()
         self.setEnabled(False)
 
@@ -37,24 +40,37 @@ class DiversityTab(QWidget):
         algo_layout = QVBoxLayout(algo_box)
         self._kmeans_rb = QRadioButton("K-means")
         self._gmm_rb = QRadioButton("GMM (Gaussian Mixture)")
+        self._butina_rb = QRadioButton("Butina (Tanimoto threshold)")
         self._kmeans_rb.setChecked(True)
         algo_layout.addWidget(self._kmeans_rb)
         algo_layout.addWidget(self._gmm_rb)
+        algo_layout.addWidget(self._butina_rb)
+
+        cutoff_row = QHBoxLayout()
+        self._butina_cutoff_spin = QDoubleSpinBox()
+        self._butina_cutoff_spin.setRange(0.01, 1.0)
+        self._butina_cutoff_spin.setSingleStep(0.05)
+        self._butina_cutoff_spin.setValue(0.4)
+        self._butina_cutoff_spin.setDecimals(2)
+        self._butina_cutoff_label = QLabel("Distance cutoff (0–1)")
+        cutoff_row.addWidget(self._butina_cutoff_label)
+        cutoff_row.addWidget(self._butina_cutoff_spin)
+        algo_layout.addLayout(cutoff_row)
+        self._butina_cutoff_label.setVisible(False)
+        self._butina_cutoff_spin.setVisible(False)
+
         left_layout.addWidget(algo_box)
 
         auto_box = QGroupBox("Class Estimation")
         auto_layout = QVBoxLayout(auto_box)
-        self._auto_k_cb = QCheckBox("Estimate class count automatically (Calinski-Harabasz)")
+        self._auto_k_cb = QCheckBox("Estimate class count automatically")
         self._auto_k_cb.setChecked(True)
         auto_layout.addWidget(self._auto_k_cb)
 
         method_row = QHBoxLayout()
         self._auto_method_combo = QComboBox()
-        self._auto_method_combo.addItem("Ensemble (recommended)", userData="ensemble")
-        self._auto_method_combo.addItem("Calinski-Harabasz", userData="calinski")
         self._auto_method_combo.addItem("Silhouette", userData="silhouette")
         self._auto_method_combo.addItem("Davies-Bouldin", userData="davies_bouldin")
-        self._auto_method_combo.addItem("HDBSCAN classes", userData="hdbscan")
         method_row.addWidget(QLabel("Method"))
         method_row.addWidget(self._auto_method_combo)
         auto_layout.addLayout(method_row)
@@ -75,6 +91,18 @@ class DiversityTab(QWidget):
         self._auto_k_cb.toggled.connect(self._auto_method_combo.setEnabled)
         self._nc_spin.setEnabled(False)
         left_layout.addWidget(auto_box)
+
+        self._auto_box = auto_box  # keep ref for visibility toggling
+
+        def _on_algo_changed():
+            is_butina = self._butina_rb.isChecked()
+            self._butina_cutoff_label.setVisible(is_butina)
+            self._butina_cutoff_spin.setVisible(is_butina)
+            self._auto_box.setVisible(not is_butina)
+
+        self._kmeans_rb.toggled.connect(lambda _: _on_algo_changed())
+        self._gmm_rb.toggled.connect(lambda _: _on_algo_changed())
+        self._butina_rb.toggled.connect(lambda _: _on_algo_changed())
 
         mode_box = QGroupBox("Selection Strategy")
         mode_layout = QVBoxLayout(mode_box)
@@ -154,8 +182,28 @@ class DiversityTab(QWidget):
 
         self.pre_tsne_canvas = TSNECanvas()
 
+        overlay_widget = QWidget()
+        overlay_layout = QVBoxLayout(overlay_widget)
+        overlay_layout.setContentsMargins(4, 4, 4, 0)
+        overlay_layout.setSpacing(2)
+
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel("Selected color:"))
+        self._overlay_cluster_rb = QRadioButton("Cluster (tab20)")
+        self._overlay_single_rb = QRadioButton("Single (blue)")
+        self._overlay_cluster_rb.setChecked(True)
+        self._overlay_cluster_rb.toggled.connect(self._refresh_overlay)
+        color_row.addWidget(self._overlay_cluster_rb)
+        color_row.addWidget(self._overlay_single_rb)
+        color_row.addStretch()
+        overlay_layout.addLayout(color_row)
+
+        self.overlay_canvas = TSNECanvas()
+        overlay_layout.addWidget(self.overlay_canvas, stretch=1)
+
         self._tabs.addTab(results_view, "Post-filter")
         self._tabs.addTab(self.pre_tsne_canvas, "Pre-filter t-SNE")
+        self._tabs.addTab(overlay_widget, "Selection Overlay")
 
         self.results_table.row_selected.connect(
             lambda smiles, cid: self.molecule_viewer.show_smiles(smiles, cid)
@@ -165,12 +213,19 @@ class DiversityTab(QWidget):
         root.addWidget(right, stretch=1)
 
     def _on_run(self):
+        if self._butina_rb.isChecked():
+            algorithm = "butina"
+        elif self._gmm_rb.isChecked():
+            algorithm = "gmm"
+        else:
+            algorithm = "kmeans"
+
         k_min = min(self._kmin_spin.value(), self._kmax_spin.value())
         k_max = max(self._kmin_spin.value(), self._kmax_spin.value())
         params = ClusterParams(
-            algorithm="kmeans" if self._kmeans_rb.isChecked() else "gmm",
+            algorithm=algorithm,
             n_clusters=self._nc_spin.value(),
-            auto_k=self._auto_k_cb.isChecked(),
+            auto_k=self._auto_k_cb.isChecked() if algorithm != "butina" else False,
             auto_k_method=str(self._auto_method_combo.currentData()),
             k_min=k_min,
             k_max=k_max,
@@ -179,6 +234,7 @@ class DiversityTab(QWidget):
             centroid_quantile=self._quantile_spin.value(),
             random_seed=self._seed_spin.value(),
             tightness_quantile=self._tightness_spin.value(),
+            butina_distance_cutoff=self._butina_cutoff_spin.value(),
         )
         self.cluster_requested.emit(params)
 
@@ -202,15 +258,32 @@ class DiversityTab(QWidget):
         self.pre_tsne_canvas.set_dataframe(df)
         self.pre_tsne_canvas.set_figure(fig)
 
+    def set_overlay_plot(self, fig, df_pre: pd.DataFrame):
+        # fig is ignored — we regenerate based on the current toggle state
+        self._df_pre = df_pre
+
+    def _refresh_overlay(self):
+        if self._df_pre.empty or self._df_diverse.empty:
+            return
+        use_cluster = self._overlay_cluster_rb.isChecked()
+        fig = make_selection_overlay_figure(
+            self._df_pre, self._df_diverse,
+            color_col="cluster" if use_cluster else None,
+        )
+        self.overlay_canvas.set_dataframe(self._df_pre)
+        self.overlay_canvas.set_figure(fig)
+
     def set_summary(self, summary: dict):
         in_n = int(summary.get("input_count", 0))
         out_n = int(summary.get("output_count", 0))
         cls = int(summary.get("estimated_classes", 0))
+        algorithm = str(summary.get("algorithm", "kmeans"))
         auto_method = str(summary.get("auto_k_method", "ensemble"))
         mode = str(summary.get("selection_mode", ""))
         pct = (100.0 * out_n / in_n) if in_n else 0.0
+        method_label = "Butina" if algorithm == "butina" else auto_method
         self._summary_label.setText(
-            f"Classes: {cls} ({auto_method}) | Retained: {out_n}/{in_n} ({pct:.1f}%) | Mode: {mode}"
+            f"Classes: {cls} ({method_label}) | Retained: {out_n}/{in_n} ({pct:.1f}%) | Mode: {mode}"
         )
         self._summary_label.setStyleSheet("color: #1f6f8b; font-weight: bold;")
 
@@ -220,8 +293,10 @@ class DiversityTab(QWidget):
 
     def on_results_ready(self, df: pd.DataFrame):
         self._base_df = df.copy()
+        self._df_diverse = df.copy()
         self.results_table.update_data(df)
         self.post_tsne_canvas.set_dataframe(df)
         self.activity_histogram.update_data(df)
         self.molecule_viewer.clear()
         self._export_btn.setEnabled(True)
+        self._refresh_overlay()

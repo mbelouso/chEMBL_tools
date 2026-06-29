@@ -4,8 +4,8 @@ Tools for querying the ChEMBL database, filtering compounds by physicochemical a
 
 ## Features
 
-- **Compound Search** — filter by MW, LogP, target name, IC50/EC50/Ki (nM) and purchasability against a local ChEMBL SQLite database
-- **Diversity Filtering** — automatic class estimation (Ensemble/Calinski/Silhouette/Davies-Bouldin/HDBSCAN), centroid-near random sampling, and pre/post tSNE visualisation
+- **Compound Search** — filter by MW, LogP, one or more target names, IC50/EC50/Ki (nM) and purchasability against a local ChEMBL SQLite database; multi-target results include a `Matched Targets` column
+- **Diversity Filtering** — K-means, GMM, or Butina (Tanimoto threshold) clustering; fast automatic class estimation via coarse-to-fine MiniBatchKMeans sweep on a subsample; centroid-near random sampling or tightness representatives; pre/post tSNE visualisation
 - **CSV Export** — enriched output including target names, UniProt accessions, and best activity values
 - **Boltz-2 YAML Export** — generate per-compound YAML inputs (affinity or template mode) distributed across subdirectories
 - **MSA Generation** — query the ColabFold API to generate `.a3m` MSA files, or load a pre-computed one
@@ -41,11 +41,23 @@ On first launch a settings dialog will prompt you to locate `chembl_37.db`. The 
 
 ### Tab 1 — Search
 
-Set MW range, LogP range, an optional target keyword (e.g. `EGFR`), and optional maximum activity values (IC50/EC50/Ki in nM). Click **Search** to query the database. Results appear in the table and a tSNE plot coloured by cluster is rendered automatically.
+Set MW range, LogP range, and optional activity thresholds (IC50/EC50/Ki in nM).
+
+**Target field** accepts a single target or multiple comma-separated targets (e.g. `EGFR, BRAF, CDK2`). Compounds active against any of the listed targets are returned. When multiple targets are given, a **Matched Targets** column in the results table shows which search terms each compound matched. Autocomplete is available for each token — type a target name, select from the dropdown, then add a comma to enter the next target.
+
+Click **Search** to query the database. Results appear in the table and tSNE/PCA plots coloured by cluster are rendered automatically.
 
 ### Tab 2 — Diversity Filter
 
-Choose K-means or GMM, enable automatic class estimation (or set manual classes), select the auto-class method, then choose either centroid-near random sampling or tightness representatives. Click **Run Diversity** to generate a filtered set and inspect pre/post tSNE views. The Diversity tab also includes the same histogram curation panel as Search; curated diversity results are used for export and YAML when active.
+Choose a **Clustering Algorithm**:
+
+- **K-means** — standard centroid-based clustering; specify the number of classes manually or let auto-estimation find it.
+- **GMM** (Gaussian Mixture) — soft-assignment clustering; auto-estimation supported.
+- **Butina** (Tanimoto threshold) — sphere-exclusion clustering based on pairwise Tanimoto distances. Set the **Distance cutoff** (0–1; default 0.4): compounds within this distance of a cluster center are merged into the same cluster. The number of clusters is determined automatically from the cutoff; the Class Estimation panel is hidden for this algorithm.
+
+When **K-means** or **GMM** is selected with **Estimate class count automatically**, the sweep runs on a random subsample (≤ 2 000 compounds) using a coarse-to-fine MiniBatchKMeans search, making estimation fast even for large result sets. The final clustering always uses the full dataset.
+
+Choose either **centroid-near random sampling** or **tightness representatives**, then click **Run Diversity** to generate a filtered set and inspect pre/post tSNE views. Curated diversity results are used for export and YAML when active.
 
 ### Tab 3 — Boltz-2 YAML Export
 
@@ -65,7 +77,7 @@ chembl_app/
 │   └── widgets/                   # tsne_canvas, results_table
 ├── core/
 │   ├── db/                        # SQL queries (property, target, activity, export)
-│   ├── chemistry/                 # Fingerprints, tSNE, K-means/GMM clustering
+│   ├── chemistry/                 # Fingerprints, tSNE, K-means/GMM/Butina clustering
 │   ├── io/                        # FASTA reader, YAML generator, CSV exporter
 │   └── msa/                       # ColabFold REST API client
 ├── workers/                       # QThread workers (search, diversity, yaml, msa)

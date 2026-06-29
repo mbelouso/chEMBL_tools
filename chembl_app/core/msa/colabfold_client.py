@@ -7,10 +7,11 @@ _BASE = "https://api.colabfold.com"
 
 
 def submit_msa_job(sequence: str) -> str:
-    query = f">query\n{sequence}"
+    query = f">101\n{sequence}\n"
     resp = requests.post(
         f"{_BASE}/ticket/msa",
-        json={"q": query, "mode": "env"},
+        data={"q": query, "mode": "env"},
+        headers={"User-Agent": "boltz"},
         timeout=30,
     )
     resp.raise_for_status()

@@ -15,10 +15,11 @@ from core.chemistry.tsne import make_tsne_figure
 class DiversityWorker(QThread):
     progress = pyqtSignal(int)
     status = pyqtSignal(str)
-    results_ready = pyqtSignal(object)   # diverse DataFrame
-    pre_plot_ready = pyqtSignal(object, object)  # pre-filter DataFrame, Figure
-    plot_ready = pyqtSignal(object)      # Figure
-    summary_ready = pyqtSignal(object)   # dict summary
+    results_ready = pyqtSignal(object)          # diverse DataFrame
+    pre_plot_ready = pyqtSignal(object, object) # pre-filter DataFrame, Figure
+    plot_ready = pyqtSignal(object)             # Figure
+    overlay_ready = pyqtSignal(object, object)  # df_pre (all), df_diverse (selected)
+    summary_ready = pyqtSignal(object)          # dict summary
     error = pyqtSignal(str)
 
     def __init__(
@@ -54,9 +55,12 @@ class DiversityWorker(QThread):
                 centroid_quantile=self.params.centroid_quantile,
                 random_seed=self.params.random_seed,
                 tightness_quantile=self.params.tightness_quantile,
+                butina_distance_cutoff=self.params.butina_distance_cutoff,
             )
 
-            if n_samples >= 3 and effective_params.auto_k:
+            is_butina = effective_params.algorithm == "butina"
+
+            if n_samples >= 3 and effective_params.auto_k and not is_butina:
                 self.status.emit("Estimating number of classes…")
                 self.progress.emit(12)
                 effective_params.n_clusters = estimate_n_clusters(self.fps_array, effective_params)
@@ -68,6 +72,9 @@ class DiversityWorker(QThread):
                 centers = self.fps_array[:1].copy()
             else:
                 labels, centers = cluster(self.fps_array, effective_params)
+
+            if is_butina:
+                effective_params.n_clusters = int(np.max(labels) + 1)
 
             self.status.emit("Selecting diverse subset…")
             self.progress.emit(60)
@@ -84,6 +91,8 @@ class DiversityWorker(QThread):
             else:
                 df_diverse = diversity_select(df_work, self.fps_array, labels, centers, effective_params)
 
+            self.overlay_ready.emit(df_work.copy(), df_diverse.copy())
+
             self.status.emit("Rendering plot…")
             self.progress.emit(90)
             fig = make_tsne_figure(df_diverse, color_col="cluster")
@@ -97,6 +106,7 @@ class DiversityWorker(QThread):
                 "output_count": len(df_diverse),
                 "estimated_classes": int(effective_params.n_clusters),
                 "auto_k_method": effective_params.auto_k_method,
+                "algorithm": effective_params.algorithm,
                 "selection_mode": effective_params.selection_mode,
                 "cluster_counts": cluster_counts,
             })

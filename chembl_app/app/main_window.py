@@ -182,6 +182,7 @@ class MainWindow(QMainWindow):
         self._diversity_worker.results_ready.connect(self._on_diversity_complete)
         self._diversity_worker.pre_plot_ready.connect(self._diversity_tab.set_pre_filter_plot)
         self._diversity_worker.plot_ready.connect(self._diversity_tab.post_tsne_canvas.set_figure)
+        self._diversity_worker.overlay_ready.connect(self._on_diversity_overlay_ready)
         self._diversity_worker.summary_ready.connect(self._diversity_tab.set_summary)
         self._diversity_worker.error.connect(self._on_error)
         self._diversity_worker.finished.connect(lambda: self._diversity_tab.set_busy(False))
@@ -194,6 +195,9 @@ class MainWindow(QMainWindow):
         self._diversity_tab.on_results_ready(df)
         self._diversity_tab.post_tsne_canvas.set_dataframe(df)
         self._status_bar.showMessage(f"Diversity filter: {len(df)} compounds retained.")
+
+    def _on_diversity_overlay_ready(self, df_pre, df_diverse):
+        self._diversity_tab.set_overlay_plot(None, df_pre)
 
     def _on_diversity_curation_changed(self, curated_df):
         self.state.diversity_curated_results = curated_df

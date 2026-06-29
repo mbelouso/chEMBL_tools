@@ -6,12 +6,12 @@ class CompoundTableModel(QAbstractTableModel):
     _DISPLAY_COLS = [
         "chembl_id", "canonical_smiles", "molecular_weight", "alogp",
         "hba", "hbd", "psa",
-        "target_name", "target_chembl_id", "target_uniprot",
+        "target_name", "target_chembl_id", "target_uniprot", "matched_targets",
         "best_ic50_nm", "best_ec50_nm", "best_ki_nm", "purchasable",
     ]
     _HEADERS = [
         "ChEMBL ID", "SMILES", "MW", "LogP", "HBA", "HBD", "PSA",
-        "Target Name", "Target ChEMBL", "UniProt",
+        "Target Name", "Target ChEMBL", "UniProt", "Matched Targets",
         "IC50 best (nM)", "EC50 best (nM)", "Ki best (nM)", "Purchasable",
     ]
 

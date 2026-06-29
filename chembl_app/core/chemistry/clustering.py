@@ -2,9 +2,12 @@ import numpy as np
 import pandas as pd
 from dataclasses import dataclass
 from scipy.spatial.distance import cdist
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.metrics import calinski_harabasz_score, silhouette_score, davies_bouldin_score
 from sklearn.mixture import GaussianMixture
+
+_ESTIMATION_SUBSAMPLE = 2000   # max compounds used during the k-sweep
+_COARSE_STEP = 4               # step size for the coarse k-scan
 
 try:
     import hdbscan
@@ -15,7 +18,7 @@ except ImportError:
 
 @dataclass
 class ClusterParams:
-    algorithm: str = "kmeans"   # "kmeans" or "gmm"
+    algorithm: str = "kmeans"   # "kmeans", "gmm", or "butina"
     n_clusters: int = 20
     auto_k: bool = True
     auto_k_method: str = "ensemble"  # "ensemble", "calinski", "silhouette", "davies_bouldin", "hdbscan"
@@ -26,6 +29,41 @@ class ClusterParams:
     centroid_quantile: float = 0.4
     random_seed: int = 42
     tightness_quantile: float = 0.30
+    butina_distance_cutoff: float = 0.4  # Tanimoto distance cutoff for Butina
+
+
+def _pick_best_k_from_scores(scores: dict, method: str) -> int:
+    """Select best k from {k: {"ch": float, "db": float, "sil": float?}}."""
+    valid_ks = sorted(scores.keys())
+
+    if method == "calinski":
+        return max(valid_ks, key=lambda k: scores[k]["ch"])
+    if method == "davies_bouldin":
+        return min(valid_ks, key=lambda k: scores[k]["db"])
+    if method == "silhouette":
+        return max(valid_ks, key=lambda k: scores[k].get("sil", 0.0))
+
+    # Ensemble: CH (higher = better) + DB (lower = better), no silhouette in sweep
+    ch_vals = np.array([scores[k]["ch"] for k in valid_ks], dtype=float)
+    db_vals = np.array([scores[k]["db"] for k in valid_ks], dtype=float)
+
+    def _norm(v: np.ndarray) -> np.ndarray:
+        lo, hi = float(np.min(v)), float(np.max(v))
+        return (v - lo) / (hi - lo) if hi - lo > 1e-12 else np.full_like(v, 0.5)
+
+    combined = 0.55 * _norm(ch_vals) + 0.45 * (1.0 - _norm(db_vals))
+    best_idx = int(np.argmax(combined))
+    best_k = valid_ks[best_idx]
+
+    # Prefer an interior k if the boundary winner is only marginally better
+    if best_k in (valid_ks[0], valid_ks[-1]) and len(valid_ks) > 3:
+        interior = [k for k in valid_ks if k not in (valid_ks[0], valid_ks[-1])]
+        if interior:
+            best_int = max(interior, key=lambda k: combined[valid_ks.index(k)])
+            if combined[valid_ks.index(best_int)] >= combined[best_idx] * 0.95:
+                best_k = best_int
+
+    return int(best_k)
 
 
 def estimate_n_clusters(fps_array: np.ndarray, params: ClusterParams) -> int:
@@ -37,6 +75,7 @@ def estimate_n_clusters(fps_array: np.ndarray, params: ClusterParams) -> int:
     k_high = max(k_low, min(params.k_max, n_samples - 1))
     method = (params.auto_k_method or "ensemble").strip().lower()
 
+    # HDBSCAN: single fit on the full dataset, no sweep needed
     if method == "hdbscan":
         if not _HDBSCAN_AVAILABLE:
             method = "ensemble"
@@ -48,77 +87,104 @@ def estimate_n_clusters(fps_array: np.ndarray, params: ClusterParams) -> int:
                 return max(k_low, min(k_high, len(classes)))
             method = "ensemble"
 
-    best_k = min(params.n_clusters, n_samples)
-    ch_scores = {}
-    sil_scores = {}
-    db_scores = {}
+    # Subsample for the k-sweep so cost stays low regardless of dataset size
+    rng_seed = int(params.random_seed)
+    rng = np.random.default_rng(rng_seed)
+    if n_samples > _ESTIMATION_SUBSAMPLE:
+        idx = rng.choice(n_samples, size=_ESTIMATION_SUBSAMPLE, replace=False)
+        sub = fps_array[idx]
+    else:
+        sub = fps_array
+    n_sub = len(sub)
 
-    for k in range(k_low, k_high + 1):
-        test_params = ClusterParams(
-            algorithm=params.algorithm,
-            n_clusters=k,
-            auto_k=False,
-            auto_k_method=params.auto_k_method,
-            k_min=params.k_min,
-            k_max=params.k_max,
-            selection_mode=params.selection_mode,
-            random_per_cluster=params.random_per_cluster,
-            centroid_quantile=params.centroid_quantile,
-            random_seed=params.random_seed,
-            tightness_quantile=params.tightness_quantile,
+    # Clamp k range to the subsample size
+    k_lo = max(2, min(k_low, n_sub - 1))
+    k_hi = max(k_lo, min(k_high, n_sub - 1))
+
+    def _score_k(k: int) -> dict | None:
+        batch = min(n_sub, max(k * 3, 256))
+        km = MiniBatchKMeans(
+            n_clusters=k, random_state=rng_seed,
+            n_init=3, batch_size=batch, max_iter=100,
         )
         try:
-            labels, _ = cluster(fps_array, test_params)
-            if len(np.unique(labels)) < 2:
-                continue
-            ch_scores[k] = float(calinski_harabasz_score(fps_array, labels))
-            sil_scores[k] = float(silhouette_score(fps_array, labels))
-            db_scores[k] = float(davies_bouldin_score(fps_array, labels))
+            labels = km.fit_predict(sub)
         except Exception:
-            continue
+            return None
+        if len(np.unique(labels)) < 2:
+            return None
+        entry = {
+            "ch": float(calinski_harabasz_score(sub, labels)),
+            "db": float(davies_bouldin_score(sub, labels)),
+        }
+        if method == "silhouette":
+            samp = min(500, n_sub)
+            entry["sil"] = float(silhouette_score(sub, labels, sample_size=samp, random_state=rng_seed))
+        return entry
 
-    if not ch_scores:
+    # Coarse pass: scan every _COARSE_STEP to find the promising region
+    coarse_ks = list(range(k_lo, k_hi + 1, _COARSE_STEP))
+    if k_hi not in coarse_ks:
+        coarse_ks.append(k_hi)
+
+    all_scores: dict[int, dict] = {}
+    for k in coarse_ks:
+        s = _score_k(k)
+        if s is not None:
+            all_scores[k] = s
+
+    if not all_scores:
         return max(1, min(params.n_clusters, n_samples))
 
-    valid_ks = sorted(ch_scores.keys())
+    best_coarse = _pick_best_k_from_scores(all_scores, method)
 
-    if method == "calinski":
-        best_k = max(valid_ks, key=lambda k: ch_scores[k])
-    elif method == "silhouette":
-        best_k = max(valid_ks, key=lambda k: sil_scores[k])
-    elif method == "davies_bouldin":
-        best_k = min(valid_ks, key=lambda k: db_scores[k])
-    else:
-        ch_vals = np.array([ch_scores[k] for k in valid_ks], dtype=float)
-        sil_vals = np.array([sil_scores[k] for k in valid_ks], dtype=float)
-        db_vals = np.array([db_scores[k] for k in valid_ks], dtype=float)
+    # Fine pass: fill in every integer within ±_COARSE_STEP of the coarse winner
+    fine_lo = max(k_lo, best_coarse - _COARSE_STEP)
+    fine_hi = min(k_hi, best_coarse + _COARSE_STEP)
+    for k in range(fine_lo, fine_hi + 1):
+        if k not in all_scores:
+            s = _score_k(k)
+            if s is not None:
+                all_scores[k] = s
 
-        def _normalize(vals: np.ndarray) -> np.ndarray:
-            lo = float(np.min(vals))
-            hi = float(np.max(vals))
-            if hi - lo < 1e-12:
-                return np.ones_like(vals) * 0.5
-            return (vals - lo) / (hi - lo)
-
-        ch_n = _normalize(ch_vals)
-        sil_n = _normalize(sil_vals)
-        db_n = 1.0 - _normalize(db_vals)
-
-        combined = 0.45 * sil_n + 0.35 * ch_n + 0.20 * db_n
-        best_idx = int(np.argmax(combined))
-        best_k = valid_ks[best_idx]
-
-        if best_k in (k_low, k_high) and len(valid_ks) > 3:
-            interior = [k for k in valid_ks if k not in (k_low, k_high)]
-            if interior:
-                best_interior = max(interior, key=lambda k: combined[valid_ks.index(k)])
-                if combined[valid_ks.index(best_interior)] >= combined[best_idx] * 0.95:
-                    best_k = best_interior
-
+    best_k = _pick_best_k_from_scores(all_scores, method)
     return int(max(k_low, min(k_high, best_k)))
 
 
+def _tanimoto_dist_lower_triangle(fps_array: np.ndarray) -> list:
+    """Compute lower-triangle Tanimoto distance list for Butina."""
+    n = len(fps_array)
+    fp_f = fps_array.astype(np.float32)
+    norms = np.sum(fp_f, axis=1)  # number of set bits per fingerprint
+    dists = []
+    for i in range(1, n):
+        dots = fp_f[:i] @ fp_f[i]          # shape (i,)
+        unions = norms[:i] + norms[i] - dots
+        sims = np.where(unions > 0, dots / unions, 1.0)
+        dists.extend((1.0 - sims).tolist())
+    return dists
+
+
+def cluster_butina(fps_array: np.ndarray, params: ClusterParams):
+    from rdkit.ML.Cluster import Butina  # local import — only used when Butina is chosen
+
+    n = len(fps_array)
+    dists = _tanimoto_dist_lower_triangle(fps_array)
+    raw_clusters = Butina.ClusterData(dists, n, float(params.butina_distance_cutoff), isDistData=True)
+
+    labels = np.zeros(n, dtype=int)
+    for cid, members in enumerate(raw_clusters):
+        for mol_idx in members:
+            labels[mol_idx] = cid
+
+    # Cluster centers are the first (representative) member of each Butina cluster
+    centers = np.array([fps_array[members[0]] for members in raw_clusters], dtype=float)
+    return labels, centers
+
+
 def cluster(fps_array: np.ndarray, params: ClusterParams):
+    if params.algorithm == "butina":
+        return cluster_butina(fps_array, params)
     if params.algorithm == "gmm":
         gmm = GaussianMixture(n_components=params.n_clusters, random_state=42, covariance_type="full")
         labels = gmm.fit_predict(fps_array)

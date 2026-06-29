@@ -10,7 +10,8 @@ from core.db.connection import get_connection
 from core.db.queries import (
     query_by_properties,
     query_target_molregnos,
-    query_activity_aggregates,
+    query_target_molregnos_multi,
+    query_all_activity_aggregates,
     query_export_details,
     nm_to_pchembl,
     pchembl_to_nm,
@@ -62,35 +63,48 @@ class SearchWorker(QThread):
                     self.error.emit("No compounds found for the given MW/LogP range.")
                     return
 
-                if p.target_text.strip():
-                    self.status.emit(f"Filtering by target '{p.target_text}'…")
+                target_list = [t.strip() for t in p.target_text.split(",") if t.strip()]
+                if target_list:
                     self.progress.emit(15)
-                    tids = query_target_molregnos(conn, p.target_text.strip())
-                    df = df[df["molregno"].isin(tids)].reset_index(drop=True)
-                    if df.empty:
-                        self.error.emit("No compounds found for the specified target.")
-                        return
+                    if len(target_list) == 1:
+                        self.status.emit(f"Filtering by target '{target_list[0]}'…")
+                        tids = query_target_molregnos(conn, target_list[0])
+                        df = df[df["molregno"].isin(tids)].reset_index(drop=True)
+                        if df.empty:
+                            self.error.emit("No compounds found for the specified target.")
+                            return
+                    else:
+                        self.status.emit(f"Filtering by {len(target_list)} targets…")
+                        per_target = query_target_molregnos_multi(conn, target_list)
+                        all_tids = set().union(*per_target.values())
+                        df = df[df["molregno"].isin(all_tids)].reset_index(drop=True)
+                        if df.empty:
+                            self.error.emit("No compounds found for any of the specified targets.")
+                            return
+                        df["matched_targets"] = df["molregno"].apply(
+                            lambda m: ", ".join(t for t, s in per_target.items() if m in s)
+                        )
 
                 self.status.emit("Aggregating activity data (IC50/EC50/Ki)…")
                 self.progress.emit(25)
+                agg = query_all_activity_aggregates(conn, df["molregno"].tolist())
+                if not agg.empty:
+                    df = df.merge(agg, on="molregno", how="left")
                 for act_type, col_pchembl, col_nm, max_nm in [
                     ("IC50", "best_ic50_pchembl", "best_ic50_nm", p.ic50_max_nm),
                     ("EC50", "best_ec50_pchembl", "best_ec50_nm", p.ec50_max_nm),
                     ("Ki",   "best_ki_pchembl",   "best_ki_nm",   p.ki_max_nm),
                 ]:
-                    agg = query_activity_aggregates(conn, df["molregno"].tolist(), act_type)
-                    if not agg.empty:
-                        agg = agg.rename(columns={"best_pchembl": col_pchembl, "assay_count": f"{act_type.lower()}_assay_count"})
-                        df = df.merge(agg, on="molregno", how="left")
+                    if col_pchembl in df.columns:
                         df[col_nm] = df[col_pchembl].apply(
                             lambda v: round(pchembl_to_nm(v), 3) if pd.notna(v) else None
                         )
-                        if max_nm is not None:
-                            pchembl_min = nm_to_pchembl(max_nm)
-                            df = df[df[col_pchembl].notna() & (df[col_pchembl] >= pchembl_min)].reset_index(drop=True)
-                            if df.empty:
-                                self.error.emit(f"No compounds pass the {act_type} filter.")
-                                return
+                    if max_nm is not None:
+                        pchembl_min = nm_to_pchembl(max_nm)
+                        df = df[df[col_pchembl].notna() & (df[col_pchembl] >= pchembl_min)].reset_index(drop=True)
+                        if df.empty:
+                            self.error.emit(f"No compounds pass the {act_type} filter.")
+                            return
 
                 self.status.emit("Collecting target metadata…")
                 self.progress.emit(35)

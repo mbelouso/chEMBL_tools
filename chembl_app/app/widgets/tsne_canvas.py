@@ -4,7 +4,7 @@ from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg,
     NavigationToolbar2QT,
 )
-from PyQt5.QtWidgets import QWidget, QVBoxLayout
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
 
 
 class TSNECanvas(QWidget):
@@ -19,10 +19,13 @@ class TSNECanvas(QWidget):
         self._x_col = "tsne_x"
         self._y_col = "tsne_y"
 
+        self._canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._toolbar)
-        layout.addWidget(self._canvas)
+        layout.addWidget(self._canvas, stretch=1)
 
     def set_figure(self, fig: Figure):
         self._fig = fig
