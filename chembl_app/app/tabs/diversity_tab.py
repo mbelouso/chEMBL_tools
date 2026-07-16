@@ -209,6 +209,11 @@ class DiversityTab(QWidget):
             lambda smiles, cid: self.molecule_viewer.show_smiles(smiles, cid)
         )
 
+        # Clicking a point in a plot selects the matching row in the table
+        self.post_tsne_canvas.point_clicked.connect(self.results_table.select_by_chembl_id)
+        self.pre_tsne_canvas.point_clicked.connect(self.results_table.select_by_chembl_id)
+        self.overlay_canvas.point_clicked.connect(self.results_table.select_by_chembl_id)
+
         right_layout.addWidget(self._tabs)
         root.addWidget(right, stretch=1)
 

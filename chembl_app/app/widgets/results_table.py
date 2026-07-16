@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from PyQt5.QtWidgets import QTableView, QAbstractItemView, QSizePolicy
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -41,3 +42,16 @@ class ResultsTable(QTableView):
 
     def get_dataframe(self) -> pd.DataFrame:
         return self._model.get_dataframe()
+
+    def select_by_chembl_id(self, chembl_id: str) -> bool:
+        """Select (and scroll to) the row matching chembl_id. Returns False if not found."""
+        df = self._model.get_dataframe()
+        if df.empty or "chembl_id" not in df.columns or not chembl_id:
+            return False
+        positions = np.flatnonzero(df["chembl_id"].astype(str).to_numpy() == str(chembl_id))
+        if positions.size == 0:
+            return False
+        row = int(positions[0])
+        self.selectRow(row)
+        self.scrollTo(self._model.index(row, 0))
+        return True

@@ -164,6 +164,10 @@ class SearchTab(QWidget):
             lambda smiles, cid: self.molecule_viewer.show_smiles(smiles, cid)
         )
 
+        # Clicking a point in a plot selects the matching row in the table
+        self.tsne_canvas.point_clicked.connect(self.results_table.select_by_chembl_id)
+        self.pca_canvas.point_clicked.connect(self.results_table.select_by_chembl_id)
+
     def set_db_path(self, db_path: str):
         if self._names_loaded:
             return  # already done

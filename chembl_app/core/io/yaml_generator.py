@@ -41,10 +41,11 @@ def generate_yaml_files(
         molecule_name = str(row["chembl_id"]).replace(" ", "_")
         smiles = row["canonical_smiles"]
 
+        msa_relpath = f"./{os.path.basename(params.msa_path)}" if params.msa_path else ""
         protein_entry = {
             "id": params.chain_a,
             "sequence": params.protein_sequence,
-            "msa": params.msa_path,
+            "msa": msa_relpath,
         }
         ligand_entry = {"id": params.chain_b, "smiles": smiles}
 
