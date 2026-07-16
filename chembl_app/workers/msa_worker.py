@@ -16,16 +16,19 @@ class MSAWorker(QThread):
 
     def run(self):
         try:
+            def _retry_status(msg: str):
+                self.status.emit(msg)
+
             self.status.emit("Submitting MSA job to ColabFold…")
             self.progress.emit(5)
-            job_id, job_status, query = submit_msa_job(self.sequence)
+            job_id, job_status, query = submit_msa_job(self.sequence, on_retry=_retry_status)
 
             self.status.emit(f"Job submitted (id={job_id}). Waiting for results…")
             self.progress.emit(10)
 
             while not self.isInterruptionRequested():
                 if job_status in ("PENDING", "RUNNING", "UNKNOWN"):
-                    job_status, job_id = poll_job(job_id, query)
+                    job_status, job_id = poll_job(job_id, query, on_retry=_retry_status)
                 if job_status == "COMPLETE":
                     break
                 if job_status == "ERROR":
@@ -39,7 +42,12 @@ class MSAWorker(QThread):
 
             self.status.emit("Downloading MSA result…")
             self.progress.emit(80)
-            path, used_fallback = download_msa(job_id, self.output_path, query)
+            path, used_fallback = download_msa(
+                job_id,
+                self.output_path,
+                query,
+                on_retry=_retry_status,
+            )
             if used_fallback:
                 self.status.emit("ColabFold returned a non-downloadable result; using single-sequence A3M fallback.")
             self.progress.emit(100)
