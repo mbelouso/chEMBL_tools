@@ -162,8 +162,9 @@ class BoltzTab(QWidget):
             QMessageBox.warning(self, "Error", str(e))
 
     def _browse_msa(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select MSA file", "", "A3M (*.a3m);;All files (*)"
+        start = self._msa_edit.text().strip() or "msa.a3m"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Select MSA file", start, "A3M (*.a3m);;All files (*)"
         )
         if path:
             self._msa_edit.setText(path)
@@ -187,10 +188,12 @@ class BoltzTab(QWidget):
         if not seq:
             QMessageBox.warning(self, "No sequence", "Please enter a protein sequence first.")
             return
-        out_path, _ = QFileDialog.getSaveFileName(
-            self, "Save MSA as", "msa.a3m", "A3M (*.a3m)"
-        )
+        out_path = self._msa_edit.text().strip()
         if not out_path:
+            QMessageBox.warning(
+                self, "No output path",
+                "Please choose an MSA output path first, using Browse… above."
+            )
             return
         self.msa_query_requested.emit(seq, out_path)
 

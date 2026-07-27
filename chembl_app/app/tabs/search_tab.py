@@ -2,15 +2,15 @@ import pandas as pd
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QLabel,
     QDoubleSpinBox, QLineEdit, QCheckBox, QPushButton,
-    QSplitter, QSizePolicy, QCompleter, QTabWidget, QFileDialog,
+    QSplitter, QSizePolicy, QTabWidget, QFileDialog, QMessageBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QStandardItemModel, QStandardItem
 
 from app.widgets.results_table import ResultsTable
 from app.widgets.tsne_canvas import TSNECanvas
 from app.widgets.molecule_viewer import MoleculeViewer
 from app.widgets.activity_histogram import ActivityHistogramCanvas
+from app.dialogs.target_select_dialog import TargetSelectDialog
 from core.chemistry.tsne import make_tsne_figure
 from core.chemistry.projections import make_projection_figure
 from workers.search_worker import SearchParams
@@ -42,6 +42,7 @@ class _ActivityRow(QWidget):
 
 class SearchTab(QWidget):
     search_requested = pyqtSignal(object)   # SearchParams
+    import_requested = pyqtSignal(str)      # presearched CSV file path
     export_requested = pyqtSignal(str)      # output file path
     curation_changed = pyqtSignal(object)   # curated DataFrame
 
@@ -50,8 +51,8 @@ class SearchTab(QWidget):
         self._names_worker: TargetNamesWorker = None
         self._names_loaded = False
         self._base_df = pd.DataFrame()
-        self._target_completer: QCompleter = None
-        self._target_prefix: str = ""
+        self._target_names: list = []       # all available target pref_names
+        self._selected_targets: list = []   # current user selection
         self._build_ui()
 
     def _build_ui(self):
@@ -84,9 +85,14 @@ class SearchTab(QWidget):
         # Target
         tgt_box = QGroupBox("Target")
         tgt_layout = QVBoxLayout(tgt_box)
-        self._target_edit = QLineEdit()
-        self._target_edit.setPlaceholderText("e.g. EGFR, BRAF — comma-separated, leave blank for all")
-        tgt_layout.addWidget(self._target_edit)
+        self._target_summary_label = QLabel("No targets selected (all)")
+        self._target_summary_label.setWordWrap(True)
+        self._target_summary_label.setStyleSheet("color: gray; font-style: italic;")
+        tgt_layout.addWidget(self._target_summary_label)
+        self._select_targets_btn = QPushButton("Select Targets…")
+        self._select_targets_btn.setEnabled(False)
+        self._select_targets_btn.clicked.connect(self._on_select_targets)
+        tgt_layout.addWidget(self._select_targets_btn)
         left_layout.addWidget(tgt_box)
 
         # Activity filters
@@ -109,6 +115,11 @@ class SearchTab(QWidget):
         self._search_btn.setFixedHeight(36)
         self._search_btn.clicked.connect(self._on_search)
         left_layout.addWidget(self._search_btn)
+
+        self._import_btn = QPushButton("Import Presearched CSV…")
+        self._import_btn.setFixedHeight(36)
+        self._import_btn.clicked.connect(self._on_import_csv)
+        left_layout.addWidget(self._import_btn)
 
         self._export_btn = QPushButton("Export Search Results as CSV…")
         self._export_btn.setFixedHeight(36)
@@ -173,46 +184,49 @@ class SearchTab(QWidget):
             return  # already done
         if self._names_worker and self._names_worker.isRunning():
             return  # already loading
-        self._target_edit.setPlaceholderText("Loading targets…")
+        self._select_targets_btn.setEnabled(False)
+        self._select_targets_btn.setText("Select Targets… (loading names)")
         self._names_worker = TargetNamesWorker(db_path)
         self._names_worker.names_ready.connect(self._on_target_names_ready)
-        self._names_worker.error.connect(
-            lambda _: self._target_edit.setPlaceholderText("e.g. EGFR, BRAF — comma-separated, leave blank for all")
-        )
+        self._names_worker.error.connect(self._on_target_names_error)
         self._names_worker.start()
 
     def _on_target_names_ready(self, names: list):
         self._names_loaded = True
-        self._target_edit.setPlaceholderText("e.g. EGFR, BRAF — comma-separated, leave blank for all")
+        self._target_names = names
+        self._select_targets_btn.setEnabled(True)
+        self._select_targets_btn.setText("Select Targets…")
 
-        self._target_completer = QCompleter(names, self)
-        self._target_completer.setCaseSensitivity(Qt.CaseInsensitive)
-        self._target_completer.setFilterMode(Qt.MatchContains)
-        self._target_completer.setMaxVisibleItems(12)
-        self._target_completer.setCompletionMode(QCompleter.PopupCompletion)
-        # Use setWidget instead of setCompleter so we control multi-token insertion
-        self._target_completer.setWidget(self._target_edit)
+    def _on_target_names_error(self, _message: str):
+        self._names_loaded = False
+        self._target_names = []
+        self._select_targets_btn.setEnabled(True)
+        self._select_targets_btn.setText("Select Targets…")
 
-        self._target_edit.textEdited.connect(self._on_target_text_edited)
-        self._target_completer.activated.connect(self._on_target_completion)
+    def _on_select_targets(self):
+        if not self._names_loaded:
+            QMessageBox.information(
+                self, "Targets not loaded",
+                "Target names are still loading (or no database has been configured yet). "
+                "Please wait a moment and try again."
+            )
+            return
+        dialog = TargetSelectDialog(self._target_names, self._selected_targets, self)
+        if dialog.exec_():
+            self._selected_targets = dialog.selected_names()
+            self._update_target_summary()
 
-    def _on_target_text_edited(self, text: str):
-        parts = text.split(",")
-        self._target_prefix = ",".join(parts[:-1])
-        last = parts[-1].lstrip()
-        self._target_completer.setCompletionPrefix(last)
-        if last:
-            self._target_completer.complete()
-        else:
-            self._target_completer.popup().hide()
-
-    def _on_target_completion(self, completion: str):
-        if self._target_prefix:
-            new_text = self._target_prefix + ", " + completion
-        else:
-            new_text = completion
-        self._target_edit.setText(new_text)
-        self._target_edit.setCursorPosition(len(new_text))
+    def _update_target_summary(self):
+        n = len(self._selected_targets)
+        if n == 0:
+            self._target_summary_label.setText("No targets selected (all)")
+            self._target_summary_label.setStyleSheet("color: gray; font-style: italic;")
+            return
+        preview = ", ".join(self._selected_targets[:3])
+        if n > 3:
+            preview += f", +{n - 3} more"
+        self._target_summary_label.setText(f"{n} target{'s' if n != 1 else ''} selected: {preview}")
+        self._target_summary_label.setStyleSheet("")
 
     def _on_search(self):
         params = SearchParams(
@@ -220,13 +234,20 @@ class SearchTab(QWidget):
             mw_max=self._mw_max.value(),
             logp_min=self._logp_min.value(),
             logp_max=self._logp_max.value(),
-            target_text=self._target_edit.text().strip(),
+            target_names=list(self._selected_targets),
             ic50_max_nm=self._ic50_row.max_nm(),
             ec50_max_nm=self._ec50_row.max_nm(),
             ki_max_nm=self._ki_row.max_nm(),
             purchasable_only=self._purchasable_cb.isChecked(),
         )
         self.search_requested.emit(params)
+
+    def _on_import_csv(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Presearched CSV", "", "CSV (*.csv)"
+        )
+        if path:
+            self.import_requested.emit(path)
 
     def _on_export(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -275,8 +296,9 @@ class SearchTab(QWidget):
     def set_busy(self, busy: bool):
         self._search_btn.setEnabled(not busy)
         self._search_btn.setText("Searching…" if busy else "Search")
+        self._import_btn.setEnabled(not busy)
         self._export_btn.setEnabled((not busy) and (not self._base_df.empty))
         if busy:
-            self._count_label.setText("Searching…")
+            self._count_label.setText("Working…")
             self._count_label.setStyleSheet("color: gray; font-style: italic;")
             self.activity_histogram.clear()

@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -28,7 +28,7 @@ class SearchParams:
     mw_max: float = 900.0
     logp_min: float = 3.0
     logp_max: float = 5.0
-    target_text: str = ""
+    target_names: list = field(default_factory=list)
     ic50_max_nm: Optional[float] = None
     ec50_max_nm: Optional[float] = None
     ki_max_nm: Optional[float] = None
@@ -63,7 +63,7 @@ class SearchWorker(QThread):
                     self.error.emit("No compounds found for the given MW/LogP range.")
                     return
 
-                target_list = [t.strip() for t in p.target_text.split(",") if t.strip()]
+                target_list = list(p.target_names)
                 if target_list:
                     self.progress.emit(15)
                     if len(target_list) == 1:

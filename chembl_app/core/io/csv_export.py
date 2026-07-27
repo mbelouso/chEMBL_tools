@@ -9,8 +9,11 @@ def export_csv(
     conn: sqlite3.Connection,
     output_path: str,
 ):
-    molregnos = df["molregno"].tolist()
-    details = query_export_details(conn, molregnos)
+    if "molregno" in df.columns:
+        details = query_export_details(conn, df["molregno"].tolist())
+    else:
+        # e.g. results imported from a presearched CSV — nothing to look up
+        details = pd.DataFrame()
 
     base_cols = [
         "molregno",

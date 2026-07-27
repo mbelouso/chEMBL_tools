@@ -11,6 +11,7 @@ from app.tabs.diversity_tab import DiversityTab
 from app.tabs.boltz_tab import BoltzTab
 from app.dialogs.settings_dialog import SettingsDialog
 from workers.search_worker import SearchWorker
+from workers.csv_import_worker import CSVImportWorker
 from workers.diversity_worker import DiversityWorker
 from workers.yaml_worker import YAMLWorker
 from workers.msa_worker import MSAWorker
@@ -26,6 +27,7 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
 
         self._search_worker: SearchWorker = None
+        self._import_worker: CSVImportWorker = None
         self._diversity_worker: DiversityWorker = None
         self._yaml_worker: YAMLWorker = None
         self._msa_worker: MSAWorker = None
@@ -73,6 +75,7 @@ class MainWindow(QMainWindow):
 
         # Wire signals
         self._search_tab.search_requested.connect(self._on_search_requested)
+        self._search_tab.import_requested.connect(self._on_csv_import_requested)
         self._search_tab.export_requested.connect(self._on_search_export_requested)
         self._search_tab.curation_changed.connect(self._on_search_curation_changed)
         self._diversity_tab.cluster_requested.connect(self._on_cluster_requested)
@@ -130,6 +133,29 @@ class MainWindow(QMainWindow):
         self._boltz_tab.suggest_ndirs(len(df))
 
         self._status_bar.showMessage(f"Found {len(df)} compounds.")
+
+    def _on_csv_import_requested(self, csv_path: str):
+        if self._search_worker and self._search_worker.isRunning():
+            self._search_worker.requestInterruption()
+            self._search_worker.wait()
+        if self._import_worker and self._import_worker.isRunning():
+            self._import_worker.requestInterruption()
+            self._import_worker.wait()
+
+        self._search_tab.set_busy(True)
+        self._show_progress(True)
+        self._status_bar.showMessage("Importing CSV…")
+
+        self._import_worker = CSVImportWorker(csv_path)
+        self._import_worker.progress.connect(self._progress.setValue)
+        self._import_worker.status.connect(self._status_bar.showMessage)
+        self._import_worker.results_ready.connect(self._on_search_complete)
+        self._import_worker.plot_ready.connect(self._search_tab.tsne_canvas.set_figure)
+        self._import_worker.pca_plot_ready.connect(self._search_tab.pca_canvas.set_figure)
+        self._import_worker.error.connect(self._on_error)
+        self._import_worker.finished.connect(lambda: self._search_tab.set_busy(False))
+        self._import_worker.finished.connect(lambda: self._show_progress(False))
+        self._import_worker.start()
 
     def _on_search_curation_changed(self, curated_df):
         if self.state.current_results is None:
@@ -326,7 +352,7 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
-        for w in (self._search_worker, self._diversity_worker, self._yaml_worker, self._msa_worker):
+        for w in (self._search_worker, self._import_worker, self._diversity_worker, self._yaml_worker, self._msa_worker):
             if w and w.isRunning():
                 w.requestInterruption()
                 w.wait()
